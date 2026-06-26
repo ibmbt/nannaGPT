@@ -5,19 +5,21 @@
 #include <iomanip>
 #include <cstdlib>
 #include <algorithm>
+#include <chrono>
 #include "model_weights.h"
 
 using namespace std;
 
 // --- HYPERPARAMETERS ---
 const int vocab_size = 65;
-const int embedding_dim = 384;  // Increased to 16
-const int num_heads = 6;       // 4 parallel heads
-const int head_size = embedding_dim / num_heads; // 16 / 4 = 4
+const int embedding_dim = 384;
+const int num_heads = 6;
+const int head_size = embedding_dim / num_heads;
 const int block_size = 256;
 const int hidden_dim = 4 * embedding_dim;
 const int K = 4;
-const float temperature = 0.7f; // 1.0 is creative/messy, 0.1 is strict/repetitive
+const int num_layers = 6;
+const float temperature = 0.7f;
 
 vector<int> getUserPrompt(const vector<char>& vocab) {
     string user_input;
@@ -32,7 +34,6 @@ vector<int> getUserPrompt(const vector<char>& vocab) {
     for (char c : user_input) {
         bool found = false;
 
-        // Find the matching ID in our dictionary
         for (int i = 0; i < vocab.size(); i++) {
             if (vocab[i] == c) {
                 tokens.push_back(i);
@@ -82,12 +83,12 @@ struct Matrix {
 
 // Groups all weights belonging to a single Transformer Block
 struct LayerWeights {
-    Matrix W_q, W_k, W_v, W_o; // Added W_o here
+    Matrix W_q, W_k, W_v, W_o;
     Matrix W_1, b_1, W_2, b_2;
 
     LayerWeights() :
         W_q(embedding_dim, embedding_dim), W_k(embedding_dim, embedding_dim),
-        W_v(embedding_dim, embedding_dim), W_o(embedding_dim, embedding_dim), // Init W_o
+        W_v(embedding_dim, embedding_dim), W_o(embedding_dim, embedding_dim),
         W_1(embedding_dim, hidden_dim), b_1(1, hidden_dim),
         W_2(hidden_dim, embedding_dim), b_2(1, embedding_dim) {
     }
@@ -108,7 +109,7 @@ struct TransformerWeights {
 };
 
 // --- MATH UTILITIES ---
-Matrix add(Matrix a, Matrix b) {
+Matrix add(const Matrix& a, const Matrix& b) {
     Matrix c(a.rows, a.cols);
     for (int i = 0; i < a.rows; i++) {
         for (int j = 0; j < a.cols; j++) {
@@ -118,7 +119,7 @@ Matrix add(Matrix a, Matrix b) {
     return c;
 }
 
-Matrix addBias(Matrix a, Matrix bias) {
+Matrix addBias(const Matrix& a, const Matrix& bias) {
     Matrix c(a.rows, a.cols);
     for (int i = 0; i < a.rows; i++) {
         for (int j = 0; j < a.cols; j++) {
@@ -128,7 +129,7 @@ Matrix addBias(Matrix a, Matrix bias) {
     return c;
 }
 
-Matrix multiply(Matrix a, Matrix b) {
+Matrix multiply(const Matrix& a, const Matrix& b) {
     Matrix c(a.rows, b.cols);
     for (int i = 0; i < a.rows; i++) {
         for (int j = 0; j < b.cols; j++) {
@@ -142,7 +143,7 @@ Matrix multiply(Matrix a, Matrix b) {
     return c;
 }
 
-Matrix transpose(Matrix a) {
+Matrix transpose(const Matrix& a) {
     Matrix c(a.cols, a.rows);
     for (int i = 0; i < a.rows; i++) {
         for (int j = 0; j < a.cols; j++) {
@@ -152,7 +153,7 @@ Matrix transpose(Matrix a) {
     return c;
 }
 
-Matrix division(Matrix a, float x) {
+Matrix division(const Matrix& a, float x) {
     Matrix c(a.rows, a.cols);
     for (int i = 0; i < a.rows; i++) {
         for (int j = 0; j < a.cols; j++) {
@@ -205,7 +206,7 @@ Matrix layerNorm(Matrix x, const float* ln_weight) {
 
 // --- NEURAL NETWORK BLOCKS ---
 
-Matrix embedTokens(vector<int> tokens, TransformerWeights& weights) {
+Matrix embedTokens(const vector<int>& tokens, const TransformerWeights& weights) {
     int T = tokens.size();
     Matrix x(T, embedding_dim);
     for (int i = 0; i < T; i++) {
@@ -217,7 +218,7 @@ Matrix embedTokens(vector<int> tokens, TransformerWeights& weights) {
     return x;
 }
 
-Matrix addPositionalEmbedding(Matrix x, TransformerWeights& weights) {
+Matrix addPositionalEmbedding(Matrix x, const TransformerWeights& weights) {
     for (int i = 0; i < x.rows; i++) {
         for (int j = 0; j < x.cols; j++) {
             x.matrix[i][j] += weights.W_pos.matrix[i][j];
@@ -226,7 +227,7 @@ Matrix addPositionalEmbedding(Matrix x, TransformerWeights& weights) {
     return x;
 }
 
-Matrix selfAttention(Matrix x, LayerWeights& layer) {
+Matrix selfAttention(const Matrix& x, const LayerWeights& layer) {
     Matrix Q = multiply(x, layer.W_q);
     Matrix K = multiply(x, layer.W_k);
     Matrix V = multiply(x, layer.W_v);
@@ -250,7 +251,7 @@ Matrix selfAttention(Matrix x, LayerWeights& layer) {
     return add(attn_out, x);
 }
 
-Matrix multiHeadAttention(Matrix x, LayerWeights& layer) {
+Matrix multiHeadAttention(const Matrix& x, const LayerWeights& layer) {
     // 1. Generate massive Q, K, V for all heads at once
     Matrix Q = multiply(x, layer.W_q);
     Matrix K = multiply(x, layer.W_k);
@@ -310,7 +311,7 @@ Matrix multiHeadAttention(Matrix x, LayerWeights& layer) {
     return final_attn;
 }
 
-Matrix FFN(Matrix x, LayerWeights& layer) {
+Matrix FFN(const Matrix& x, const LayerWeights& layer) {
     Matrix z = multiply(x, layer.W_1);
     z = addBias(z, layer.b_1);
     z = reLu(z);
@@ -322,7 +323,7 @@ Matrix FFN(Matrix x, LayerWeights& layer) {
     return ffn_out;
 }
 
-Matrix finalLinearLayer(Matrix x, TransformerWeights& weights) {
+Matrix finalLinearLayer(const Matrix& x, const TransformerWeights& weights) {
     Matrix logits = multiply(x, weights.W_out);
 
     // --- THE TEMPERATURE DIAL ---
@@ -348,7 +349,7 @@ struct TokenProb {
 int main() {
     // 1. INIT WEIGHTS
     TransformerWeights model_weights;
-    LayerWeights layers[6]; // We now have 6 layers!
+    LayerWeights layers[num_layers];
 
     cout << "Loading PyTorch Weights...\n";
 
@@ -357,46 +358,50 @@ int main() {
     model_weights.W_pos.loadFromArray((const float*)transformer_wpe_weight);
 
     // Grouping the PyTorch arrays into pointers so we can loop through them
-    const float* c_attn[6] = { (const float*)transformer_h_0_attn_c_attn_weight,
+    const float* c_attn[num_layers] = { (const float*)transformer_h_0_attn_c_attn_weight,
         (const float*)transformer_h_1_attn_c_attn_weight,
         (const float*)transformer_h_2_attn_c_attn_weight,
         (const float*)transformer_h_3_attn_c_attn_weight,
         (const float*)transformer_h_4_attn_c_attn_weight,
         (const float*)transformer_h_5_attn_c_attn_weight };
-    const float* c_proj[6] = { (const float*)transformer_h_0_attn_c_proj_weight,
+
+    const float* c_proj[num_layers] = { (const float*)transformer_h_0_attn_c_proj_weight,
         (const float*)transformer_h_1_attn_c_proj_weight,
         (const float*)transformer_h_2_attn_c_proj_weight,
         (const float*)transformer_h_3_attn_c_proj_weight,
         (const float*)transformer_h_4_attn_c_proj_weight,
         (const float*)transformer_h_5_attn_c_proj_weight };
-    const float* mlp_fc[6] = { (const float*)transformer_h_0_mlp_c_fc_weight,
+
+    const float* mlp_fc[num_layers] = { (const float*)transformer_h_0_mlp_c_fc_weight,
         (const float*)transformer_h_1_mlp_c_fc_weight,
         (const float*)transformer_h_2_mlp_c_fc_weight,
         (const float*)transformer_h_3_mlp_c_fc_weight,
         (const float*)transformer_h_4_mlp_c_fc_weight,
         (const float*)transformer_h_5_mlp_c_fc_weight };
-    const float* mlp_proj[6] = { (const float*)transformer_h_0_mlp_c_proj_weight,
+
+    const float* mlp_proj[num_layers] = { (const float*)transformer_h_0_mlp_c_proj_weight,
         (const float*)transformer_h_1_mlp_c_proj_weight,
         (const float*)transformer_h_2_mlp_c_proj_weight,
         (const float*)transformer_h_3_mlp_c_proj_weight,
         (const float*)transformer_h_4_mlp_c_proj_weight,
         (const float*)transformer_h_5_mlp_c_proj_weight };
 
-    const float* ln_1_weights[6] = { (const float*)transformer_h_0_ln_1_weight,
+    const float* ln_1_weights[num_layers] = { (const float*)transformer_h_0_ln_1_weight,
         (const float*)transformer_h_1_ln_1_weight,
         (const float*)transformer_h_2_ln_1_weight,
         (const float*)transformer_h_3_ln_1_weight,
         (const float*)transformer_h_4_ln_1_weight,
         (const float*)transformer_h_5_ln_1_weight };
-    const float* ln_2_weights[6] = { (const float*)transformer_h_0_ln_2_weight,
+
+    const float* ln_2_weights[num_layers] = { (const float*)transformer_h_0_ln_2_weight,
         (const float*)transformer_h_1_ln_2_weight,
         (const float*)transformer_h_2_ln_2_weight,
         (const float*)transformer_h_3_ln_2_weight,
         (const float*)transformer_h_4_ln_2_weight,
         (const float*)transformer_h_5_ln_2_weight };
 
-    // Load, slice, and transpose all 6 layers
-    for (int l = 0; l < 6; l++) {
+    // Load, slice, and transpose all layers
+    for (int l = 0; l < num_layers; l++) {
         // Unpack Fused Attention
         for (int i = 0; i < 384; i++) {
             for (int j = 0; j < 384; j++) {
@@ -453,8 +458,10 @@ int main() {
         Matrix X = embedTokens(input_tokens, model_weights);
         X = addPositionalEmbedding(X, model_weights);
 
-        // Run the data through all 6 layers sequentially
-        for (int l = 0; l < 6; l++) {
+        auto step_start = chrono::steady_clock::now();
+
+        // Run the data through all layers sequentially
+        for (int l = 0; l < num_layers; l++) {
             Matrix norm_x1 = layerNorm(X, ln_1_weights[l]);
             Matrix attn_out = multiHeadAttention(norm_x1, layers[l]);
             X = add(X, attn_out);
@@ -466,6 +473,11 @@ int main() {
 
         Matrix final_norm = layerNorm(X, transformer_ln_f_weight);
         Matrix final_probs = finalLinearLayer(final_norm, model_weights);
+        if (step == 0) {
+            auto step_end = chrono::steady_clock::now();
+            auto ms = chrono::duration_cast<chrono::milliseconds>(step_end - step_start).count();
+            cout << "\n[Timing] First token pass took " << ms << " ms (embeddings + " << num_layers << " layers + output).\n";
+        }
 
         // --- PREDICTION (Top-K Sampling) ---
 
