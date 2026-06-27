@@ -20,6 +20,7 @@ const int hidden_dim = 4 * embedding_dim;
 const int K = 4;
 const int num_layers = 6;
 const float temperature = 0.7f;
+const int generate_limit = 100;
 
 vector<int> getUserPrompt(const vector<char>& vocab) {
     string user_input;
@@ -93,7 +94,6 @@ struct LayerWeights {
         W_2(hidden_dim, embedding_dim), b_2(1, embedding_dim) {
     }
 };
-
 
 // Groups the global input and output weights
 struct TransformerWeights {
@@ -233,6 +233,9 @@ Matrix selfAttention(const Matrix& x, const LayerWeights& layer) {
     Matrix V = multiply(x, layer.W_v);
 
     Matrix K_T = transpose(K);
+
+    // normalization (Q.Kt/sqrt(d))V
+
     Matrix scores = multiply(Q, K_T);
 
     scores = division(scores, sqrt(embedding_dim));
@@ -363,42 +366,48 @@ int main() {
         (const float*)transformer_h_2_attn_c_attn_weight,
         (const float*)transformer_h_3_attn_c_attn_weight,
         (const float*)transformer_h_4_attn_c_attn_weight,
-        (const float*)transformer_h_5_attn_c_attn_weight };
+        (const float*)transformer_h_5_attn_c_attn_weight
+    };
 
     const float* c_proj[num_layers] = { (const float*)transformer_h_0_attn_c_proj_weight,
         (const float*)transformer_h_1_attn_c_proj_weight,
         (const float*)transformer_h_2_attn_c_proj_weight,
         (const float*)transformer_h_3_attn_c_proj_weight,
         (const float*)transformer_h_4_attn_c_proj_weight,
-        (const float*)transformer_h_5_attn_c_proj_weight };
+        (const float*)transformer_h_5_attn_c_proj_weight
+    };
 
     const float* mlp_fc[num_layers] = { (const float*)transformer_h_0_mlp_c_fc_weight,
         (const float*)transformer_h_1_mlp_c_fc_weight,
         (const float*)transformer_h_2_mlp_c_fc_weight,
         (const float*)transformer_h_3_mlp_c_fc_weight,
         (const float*)transformer_h_4_mlp_c_fc_weight,
-        (const float*)transformer_h_5_mlp_c_fc_weight };
+        (const float*)transformer_h_5_mlp_c_fc_weight
+    };
 
     const float* mlp_proj[num_layers] = { (const float*)transformer_h_0_mlp_c_proj_weight,
         (const float*)transformer_h_1_mlp_c_proj_weight,
         (const float*)transformer_h_2_mlp_c_proj_weight,
         (const float*)transformer_h_3_mlp_c_proj_weight,
         (const float*)transformer_h_4_mlp_c_proj_weight,
-        (const float*)transformer_h_5_mlp_c_proj_weight };
+        (const float*)transformer_h_5_mlp_c_proj_weight
+    };
 
     const float* ln_1_weights[num_layers] = { (const float*)transformer_h_0_ln_1_weight,
         (const float*)transformer_h_1_ln_1_weight,
         (const float*)transformer_h_2_ln_1_weight,
         (const float*)transformer_h_3_ln_1_weight,
         (const float*)transformer_h_4_ln_1_weight,
-        (const float*)transformer_h_5_ln_1_weight };
+        (const float*)transformer_h_5_ln_1_weight
+    };
 
     const float* ln_2_weights[num_layers] = { (const float*)transformer_h_0_ln_2_weight,
         (const float*)transformer_h_1_ln_2_weight,
         (const float*)transformer_h_2_ln_2_weight,
         (const float*)transformer_h_3_ln_2_weight,
         (const float*)transformer_h_4_ln_2_weight,
-        (const float*)transformer_h_5_ln_2_weight };
+        (const float*)transformer_h_5_ln_2_weight
+    };
 
     // Load, slice, and transpose all layers
     for (int l = 0; l < num_layers; l++) {
@@ -431,22 +440,13 @@ int main() {
         }
     }
 
-    // 2. THE STARTING PROMPT
-    // vector<int> input_tokens = { 18, 53, 56 }; // "For"
-
-    // cout << "Starting Prompt: ";
-    // for (int t : input_tokens) cout << itos[t];
-    // cout << "\nGenerating:\n";
-
     vector<int> input_tokens = getUserPrompt(itos);
 
     cout << "\nGenerating:\n";
 
 
     // 3. THE AUTOREGRESSIVE LOOP
-    int tokens_to_generate = 10000;
-
-    for (int step = 0; step < tokens_to_generate; step++) {
+    for (int step = 0; step < generate_limit; step++) {
         int T = input_tokens.size();
 
         if (T >= block_size) {
